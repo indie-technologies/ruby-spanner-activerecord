@@ -61,8 +61,16 @@ module ActiveRecord
       end
 
       def structure_load filename, _extra_flags
-        statements = File.read(filename).split(/(?=^CREATE)/)
-        @connection.execute_ddl statements
+        ddls, inserts = File.read(filename).split(/(?=^INSERT)/, 2)
+        ddl_statements = ddls.split(/(?=^CREATE)/)
+        @connection.execute_ddl ddl_statements
+
+        insert_statements = inserts.split(/(?=^INSERT)/)
+        @connection.begin_transaction
+        insert_statements.each do |insert_statement|
+          @connection.execute_query insert_statement
+        end
+        @connection.commit_transaction
       end
     end
 
