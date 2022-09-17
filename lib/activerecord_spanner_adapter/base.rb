@@ -231,7 +231,7 @@ module ActiveRecord
       values.each_pair do |k, v|
         v = unwrap_attribute v
         type = metadata.type k
-        serialized_values << (type.method(:serialize).arity < 0 ? type.serialize(v, :mutation) : type.serialize(v))
+        serialized_values << (type === ActiveRecord::Type::Spanner::Time ? type.serialize(v, :mutation) : type.serialize(v))
         columns << metadata.arel_table[k].name
       end
       [columns, Google::Protobuf::Value.new(list_value:
@@ -282,7 +282,7 @@ module ActiveRecord
         h.each_pair do |k, v|
           type = metadata.type k
           v = self.class.unwrap_attribute v
-          has_serialize_options = type.method(:serialize).arity < 0
+          has_serialize_options = type === ActiveRecord::Type::Spanner::Time
           all_serialized_values << (has_serialize_options ? type.serialize(v, :mutation) : type.serialize(v))
           all_columns << metadata.arel_table[k].name
         end
@@ -329,7 +329,7 @@ module ActiveRecord
       serialized_values = []
       keys.each do |key|
         type = metadata.type key
-        has_serialize_options = type.method(:serialize).arity < 0
+        has_serialize_options = type === ActiveRecord::Type::Spanner::Time
         serialized_values << type.serialize(attribute_in_database(key), :mutation) if has_serialize_options
         serialized_values << type.serialize(attribute_in_database(key)) unless has_serialize_options
       end
