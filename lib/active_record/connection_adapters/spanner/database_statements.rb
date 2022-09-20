@@ -221,7 +221,7 @@ module ActiveRecord
             type = bind.respond_to?(:type) ? bind.type : ActiveModel::Type::Integer
             value = bind
             value = type.serialize bind.value, :dml if type === ActiveRecord::Type::Spanner::Time
-            value = type.serialize bind.value if type !== ActiveRecord::Type::Spanner::Time && type.respond_to?(:serialize)
+            value = type.serialize bind.value if !(type === ActiveRecord::Type::Spanner::Time) && type.respond_to?(:serialize)
 
             ["p#{i + 1}", value]
           end.to_h
