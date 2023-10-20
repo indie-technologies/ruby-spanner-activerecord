@@ -111,7 +111,7 @@ module ActiveRecord
         end
 
         def execute_ddl statements
-          log "MIGRATION", "SCHEMA" do
+          log [statements].flatten.join(';'), nil do
             ActiveSupport::Dependencies.interlock.permit_concurrent_loads do
               @connection.execute_ddl statements
             end
