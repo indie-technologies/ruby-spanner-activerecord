@@ -1,5 +1,58 @@
 # Changelog
 
+### 1.6.0 (2023-12-20)
+
+#### Features
+
+* interleaved tables with built-in composite pk ([#282](https://github.com/googleapis/ruby-spanner-activerecord/issues/282)) 
+* support Query Logs ([#291](https://github.com/googleapis/ruby-spanner-activerecord/issues/291)) 
+* support Rails 7.1 ([#278](https://github.com/googleapis/ruby-spanner-activerecord/issues/278)) 
+
+### 1.5.1 (2023-12-12)
+
+#### Bug Fixes
+
+* more permissive arg passthrough for insert_all and upsert_all ([#283](https://github.com/googleapis/ruby-spanner-activerecord/issues/283)) 
+
+### 1.5.0 (2023-11-03)
+
+#### Features
+
+* Drop support for Ruby 2.6 ([#270](https://github.com/googleapis/ruby-spanner-activerecord/issues/270)) 
+* translate annotate to tags ([#267](https://github.com/googleapis/ruby-spanner-activerecord/issues/267)) 
+#### Documentation
+
+* update README to reference PGAdapter for PG ([#263](https://github.com/googleapis/ruby-spanner-activerecord/issues/263)) 
+* update README to reference PGAdapter for PG ([#263](https://github.com/googleapis/ruby-spanner-activerecord/issues/263)) ([#268](https://github.com/googleapis/ruby-spanner-activerecord/issues/268)) 
+
+### 1.4.4 (2023-09-06)
+
+#### Bug Fixes
+
+* Support for changes in Rails 7.0.7. ([#260](https://github.com/googleapis/ruby-spanner-activerecord/issues/260)) 
+
+### 1.4.3 (2023-06-09)
+
+#### Bug Fixes
+
+* unquote string default value ([#253](https://github.com/googleapis/ruby-spanner-activerecord/issues/253)) 
+
+### 1.4.2 (2023-06-01)
+
+#### Bug Fixes
+
+* allow functions to be default values ([#252](https://github.com/googleapis/ruby-spanner-activerecord/issues/252)) 
+* use original types for composite primary keys ([#246](https://github.com/googleapis/ruby-spanner-activerecord/issues/246)) 
+
+### 1.4.1 (2023-03-01)
+
+#### Bug Fixes
+
+* wrap default values in () as required ([#238](https://github.com/googleapis/ruby-spanner-activerecord/issues/238)) 
+#### Documentation
+
+* call out best practices and dialect compatibility ([#240](https://github.com/googleapis/ruby-spanner-activerecord/issues/240)) 
+
 ### 1.4.0 (2023-01-18)
 
 #### Features

@@ -36,6 +36,7 @@ module Arel # :nodoc: all
 
         if binds
           binds << collector.hints[:staleness] if collector.hints[:staleness]
+          binds << collector.hints[:request_options] if collector.hints[:request_options]
           [sql, binds]
         else
           sql
@@ -94,6 +95,26 @@ module Arel # :nodoc: all
         collector
       end
 
+      def visit_Arel_Nodes_Comment o, collector
+        o.values.each do |v|
+          if v.start_with?("request_tag:") || v.start_with?("transaction_tag:")
+            collector.hints[:request_options] ||= \
+              Google::Cloud::Spanner::V1::RequestOptions.new
+          end
+
+          if v.start_with? "request_tag:"
+            collector.hints[:request_options].request_tag = v.delete_prefix("request_tag:").strip
+            next
+          end
+          if v.start_with? "transaction_tag:"
+            collector.hints[:request_options].transaction_tag = v.delete_prefix("transaction_tag:").strip
+            next
+          end
+        end
+        # Also include the annotations as comments by calling the super implementation.
+        super
+      end
+
       def visit_Arel_Table o, collector
         return super unless collector.table_hints[o.name]
         if o.table_alias
@@ -118,7 +139,9 @@ module Arel # :nodoc: all
         # Do not generate a query parameter if the value should be set to the PENDING_COMMIT_TIMESTAMP(), as that is
         # not supported as a parameter value by Cloud Spanner.
         return collector << "PENDING_COMMIT_TIMESTAMP()" \
-          if o.value.type.is_a?(ActiveRecord::Type::Spanner::Time) && o.value.value == :commit_timestamp
+            if o.value.respond_to?(:type) \
+              && o.value.type.is_a?(ActiveRecord::Type::Spanner::Time) \
+              && o.value.value == :commit_timestamp
         collector.add_bind(o.value, &bind_block)
       end
       # rubocop:enable Naming/MethodName

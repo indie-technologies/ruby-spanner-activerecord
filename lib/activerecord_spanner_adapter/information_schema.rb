@@ -15,6 +15,8 @@ module ActiveRecordSpannerAdapter
   class InformationSchema
     include ActiveRecord::ConnectionAdapters::Quoting
 
+    IsRails71OrLater = ActiveRecord.gem_version >= Gem::Version.create("7.1.0")
+
     attr_reader :connection
 
     def initialize connection
@@ -62,6 +64,7 @@ module ActiveRecordSpannerAdapter
     end
 
     def table_columns table_name, column_name: nil
+      primary_keys = table_primary_keys(table_name).map(&:name)
       sql = +"SELECT COLUMN_NAME, SPANNER_TYPE, IS_NULLABLE, GENERATION_EXPRESSION,"
       sql << " CAST(COLUMN_DEFAULT AS STRING) AS COLUMN_DEFAULT, ORDINAL_POSITION"
       sql << " FROM INFORMATION_SCHEMA.COLUMNS"
@@ -75,22 +78,40 @@ module ActiveRecordSpannerAdapter
         table_name: table_name,
         column_name: column_name
       ).map do |row|
-        type, limit = parse_type_and_limit row["SPANNER_TYPE"]
-        column_name = row["COLUMN_NAME"]
-        options = column_options[column_name]
-
-        Table::Column.new \
-          table_name,
-          column_name,
-          type,
-          limit: limit,
-          allow_commit_timestamp: options["allow_commit_timestamp"],
-          ordinal_position: row["ORDINAL_POSITION"],
-          nullable: row["IS_NULLABLE"] == "YES",
-          default: row["COLUMN_DEFAULT"],
-          default_function: row["GENERATION_EXPRESSION"],
-          generated: row["GENERATION_EXPRESSION"].present?
+        _create_column table_name, row, primary_keys, column_options
       end
+    end
+
+    def _create_column table_name, row, primary_keys, column_options
+      type, limit = parse_type_and_limit row["SPANNER_TYPE"]
+      column_name = row["COLUMN_NAME"]
+      options = column_options[column_name]
+      primary_key = primary_keys.include? column_name
+
+      default = row["COLUMN_DEFAULT"]
+      default_function = row["GENERATION_EXPRESSION"]
+
+      if default && default.length < 200 && /\w+\(.*\)/.match?(default)
+        default_function ||= default
+        default = nil
+      end
+
+      if default && type == "STRING"
+        default = unquote_string default
+      end
+
+      Table::Column.new \
+        table_name,
+        column_name,
+        type,
+        limit: limit,
+        allow_commit_timestamp: options["allow_commit_timestamp"],
+        ordinal_position: row["ORDINAL_POSITION"],
+        nullable: row["IS_NULLABLE"] == "YES",
+        default: default,
+        default_function: default_function,
+        generated: row["GENERATION_EXPRESSION"].present?,
+        primary_key: primary_key
     end
 
     def table_column table_name, column_name
@@ -102,7 +123,7 @@ module ActiveRecordSpannerAdapter
     # ActiveRecord. The parent primary key columns are filtered out by default to allow interleaved tables to be
     # considered as tables with a single-column primary key by ActiveRecord. The actual primary key of the table will
     # include both the parent primary key columns and the 'own' primary key columns of a table.
-    def table_primary_keys table_name, include_parent_keys = false
+    def table_primary_keys table_name, include_parent_keys = IsRails71OrLater
       sql = +"WITH TABLE_PK_COLS AS ( "
       sql << "SELECT C.TABLE_NAME, C.COLUMN_NAME, C.INDEX_NAME, C.COLUMN_ORDERING, C.ORDINAL_POSITION "
       sql << "FROM INFORMATION_SCHEMA.INDEX_COLUMNS C "
@@ -278,7 +299,69 @@ module ActiveRecordSpannerAdapter
       [matched[1], limit]
     end
 
+    def unquote_string value
+      return unquote_raw_string value, 1 if value[0] == "r" || value[0] == "R"
+      unescape_string unquote_raw_string value
+    end
+
     private
+
+    def unquote_raw_string value, prefix_length = 0
+      triple_quote_range = prefix_length..(prefix_length + 2)
+      if value[triple_quote_range] == '"""' || value[triple_quote_range] == "'''"
+        value[(prefix_length + 3)...-3]
+      else
+        value[(prefix_length + 1)...-1]
+      end
+    end
+
+    def unescape_string value # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity
+      str = ""
+      i = 0
+
+      while i < value.length
+        case value[i]
+        when "\\"
+          i += 1
+          case value[i]
+          when "a" then str += "\a"
+          when "b" then str += "\b"
+          when "f" then str += "\f"
+          when "n" then str += "\n"
+          when "r" then str += "\r"
+          when "t" then str += "\t"
+          when "v" then str += "\v"
+          when "\\" then str += "\\"
+          when "?" then str += "?"
+          when "'" then str += "'"
+          when '"' then str += '"'
+          when "`" then str += "`"
+          when "0".."7"
+            str += unescape_unicode value, i, 3, 8
+            i += 2
+          when "x", "X"
+            str += unescape_unicode value, i + 1, 2, 16
+            i += 2
+          when "u"
+            str += unescape_unicode value, i + 1, 4, 16
+            i += 4
+          when "U"
+            str += unescape_unicode value, i + 1, 8, 16
+            i += 8
+          end
+        else
+          str += value[i]
+        end
+
+        i += 1
+      end
+
+      str
+    end
+
+    def unescape_unicode value, start, length, base
+      [value[start...(start + length)].to_i(base)].pack "U"
+    end
 
     def column_options table_name, column_name
       sql = +"SELECT COLUMN_NAME, OPTION_NAME, OPTION_TYPE, OPTION_VALUE"
