@@ -1,5 +1,19 @@
 # Changelog
 
+### 1.6.0 (2023-12-20)
+
+#### Features
+
+* interleaved tables with built-in composite pk ([#282](https://github.com/googleapis/ruby-spanner-activerecord/issues/282)) 
+* support Query Logs ([#291](https://github.com/googleapis/ruby-spanner-activerecord/issues/291)) 
+* support Rails 7.1 ([#278](https://github.com/googleapis/ruby-spanner-activerecord/issues/278)) 
+
+### 1.5.1 (2023-12-12)
+
+#### Bug Fixes
+
+* more permissive arg passthrough for insert_all and upsert_all ([#283](https://github.com/googleapis/ruby-spanner-activerecord/issues/283)) 
+
 ### 1.5.0 (2023-11-03)
 
 #### Features
