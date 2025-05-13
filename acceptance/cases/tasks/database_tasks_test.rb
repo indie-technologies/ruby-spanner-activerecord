@@ -48,6 +48,7 @@ module ActiveRecord
       end
 
       def teardown
+        drop_database
         ActiveRecord::Base.connection_pool.disconnect!
         FileUtils.rm_rf ActiveRecord::Tasks::DatabaseTasks.db_dir
         ActiveRecord::Tasks::DatabaseTasks.db_dir = @original_db_dir
@@ -226,6 +227,7 @@ CREATE TABLE singers (
   lock_version INT64,
   full_name STRING(MAX) AS (COALESCE(first_name || ' ', '') || last_name) STORED,
 ) PRIMARY KEY(singerid);
+CREATE INDEX index_singers_on_last_name ON singers(last_name) STORING (tracks_count, first_name);
 CREATE TABLE albums (
   albumid INT64 NOT NULL,
   singerid INT64 NOT NULL,
@@ -383,6 +385,7 @@ CREATE TABLE singers (
   lock_version INT64,
   full_name STRING(MAX) AS (COALESCE(first_name || ' ', '') || last_name) STORED,
 ) PRIMARY KEY(singerid);
+CREATE INDEX index_singers_on_last_name ON singers(last_name) STORING (tracks_count, first_name);
 CREATE TABLE albums (
   singerid INT64 NOT NULL,
   albumid INT64 NOT NULL,
@@ -547,6 +550,7 @@ CREATE TABLE singers (
   lock_version INT64,
   full_name STRING(MAX) AS (COALESCE(first_name || ' ', '') || last_name) STORED,
 ) PRIMARY KEY(singerid);
+CREATE INDEX index_singers_on_last_name ON singers(last_name) STORING (tracks_count, first_name);
 CREATE TABLE albums (
   albumid INT64 NOT NULL,
   singerid INT64 NOT NULL,
@@ -707,6 +711,7 @@ CREATE TABLE singers (
   lock_version INT64,
   full_name STRING(MAX) AS (COALESCE(first_name || ' ', '') || last_name) STORED,
 ) PRIMARY KEY(singerid);
+CREATE INDEX index_singers_on_last_name ON singers(last_name) STORING (tracks_count, first_name);
 CREATE TABLE albums (
   singerid INT64 NOT NULL,
   albumid INT64 NOT NULL,

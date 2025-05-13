@@ -6,7 +6,9 @@
 #
 # frozen_string_literal: true
 
+require "sqlite3"
 require_relative "./base_spanner_mock_server_test"
+require_relative "models/other_adapter"
 
 module MockServerTests
   CommitRequest = Google::Cloud::Spanner::V1::CommitRequest
@@ -19,6 +21,35 @@ module MockServerTests
       singer = { first_name: "Alice", last_name: "Ecila" }
 
       assert_raises(NotImplementedError) { Singer.insert(singer) }
+    end
+
+    def test_insert_other_adapter
+      ActiveRecord::Base.establish_connection(
+        adapter: "sqlite3",
+        database: ":memory:",
+      )
+      ActiveRecord::Base.logger = nil
+      ActiveRecord::Schema.define(version: 1) do
+        create_table :systems do |t|
+          t.string  :name
+        end
+
+        create_table :plans do |t|
+          t.string  :name
+        end
+
+        # simulate a join table with no primary key
+        create_table :projects, id: false do |t|
+          t.integer  :plan_id
+          t.integer  :system_id
+          t.index [:plan_id, :system_id], unique: true
+        end
+      end
+
+      system = System.create(name: "Baroque")
+      plan = Plan.create(name: "Music")
+      # This would previously fail, as the table has no primary key.
+      Project.create(plan_id: plan.id, system_id: system.id)
     end
 
     def test_insert!
@@ -45,6 +76,39 @@ module MockServerTests
       assert_equal "first_name", mutation.insert.columns[0]
       assert_equal "last_name", mutation.insert.columns[1]
       assert_equal "id", mutation.insert.columns[2]
+    end
+
+    def test_insert_with_disabled_prepared_statements
+      if ActiveRecord.respond_to?(:disable_prepared_statements)
+        ActiveRecord.disable_prepared_statements = true
+        ActiveRecord::Base.establish_connection(
+          adapter: "spanner",
+          emulator_host: "localhost:#{@port}",
+          project: "test-project",
+          instance: "test-instance",
+          database: "testdb",
+        )
+        assert ActiveRecord::Base.connection.prepared_statements?
+      end
+
+      insert_sql = "INSERT INTO `singers` (`first_name`, `last_name`, `id`) VALUES (@p1, @p2, @p3)"
+      @mock.put_statement_result insert_sql, StatementResult.new(1)
+      ActiveRecord::Base.transaction do
+        singer = { first_name: "Alice", last_name: "Ecila" }
+        Singer.create singer
+      end
+
+      requests = @mock.requests
+      request = requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == insert_sql }.first
+      assert_equal "Alice", request.params["p1"]
+      assert_equal "Ecila", request.params["p2"]
+      assert_equal :STRING, request.param_types["p1"].code
+      assert_equal :STRING, request.param_types["p2"].code
+      assert_equal :INT64, request.param_types["p3"].code
+    ensure
+      if ActiveRecord.respond_to?(:disable_prepared_statements)
+        ActiveRecord.disable_prepared_statements = false
+      end
     end
 
     def test_upsert
@@ -275,7 +339,26 @@ module MockServerTests
       assert_equal "2021-05-12T08:30:00.000000000Z", request.params["p3"]
     end
 
+    def test_create_singer_with_time_zone_aware_attributes
+      Singer.time_zone_aware_attributes=true
+
+      insert_sql = "INSERT INTO `singers` (`first_name`, `last_name`, `last_performance`, `id`) VALUES (@p1, @p2, @p3, @p4)"
+      @mock.put_statement_result insert_sql, StatementResult.new(1)
+
+      Singer.transaction do
+        Singer.create(first_name: "Dave", last_name: "Allison", last_performance: ::Time.parse("2021-05-12T10:30:00+02:00"))
+      end
+
+      request = @mock.requests.select {|req| req.is_a?(Google::Cloud::Spanner::V1::ExecuteSqlRequest) && req.sql == insert_sql }.first
+      assert_equal :TIMESTAMP, request.param_types["p3"].code
+      assert_equal "2021-05-12T08:30:00.000000000Z", request.params["p3"]
+    ensure
+      Singer.time_zone_aware_attributes=false
+    end
+
     def test_create_singer_with_last_performance_as_non_iso_string
+      return if "#{RUBY_VERSION}" < "3" && ActiveRecord::gem_version >= VERSION_7_1_0
+
       insert_sql = "INSERT INTO `singers` (`first_name`, `last_name`, `last_performance`, `id`) VALUES (@p1, @p2, @p3, @p4)"
       @mock.put_statement_result insert_sql, StatementResult.new(1)
 
