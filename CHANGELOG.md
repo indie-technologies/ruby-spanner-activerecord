@@ -1,5 +1,22 @@
 # Changelog
 
+### 1.5.0 (2023-11-03)
+
+#### Features
+
+* Drop support for Ruby 2.6 ([#270](https://github.com/googleapis/ruby-spanner-activerecord/issues/270)) 
+* translate annotate to tags ([#267](https://github.com/googleapis/ruby-spanner-activerecord/issues/267)) 
+#### Documentation
+
+* update README to reference PGAdapter for PG ([#263](https://github.com/googleapis/ruby-spanner-activerecord/issues/263)) 
+* update README to reference PGAdapter for PG ([#263](https://github.com/googleapis/ruby-spanner-activerecord/issues/263)) ([#268](https://github.com/googleapis/ruby-spanner-activerecord/issues/268)) 
+
+### 1.4.4 (2023-09-06)
+
+#### Bug Fixes
+
+* Support for changes in Rails 7.0.7. ([#260](https://github.com/googleapis/ruby-spanner-activerecord/issues/260)) 
+
 ### 1.4.3 (2023-06-09)
 
 #### Bug Fixes
