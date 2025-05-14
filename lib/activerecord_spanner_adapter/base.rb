@@ -16,6 +16,7 @@ module ActiveRecord
 
   class Base
     VERSION_7_1 = Gem::Version.create "7.1.0"
+    VERSION_7_2 = Gem::Version.create "7.2.0"
 
     # Creates an object (or multiple objects) and saves it to the database. This method will use mutations instead
     # of DML if there is no active transaction, or if the active transaction has been created with the option
@@ -48,8 +49,26 @@ module ActiveRecord
       spanner_adapter? && connection&.current_spanner_transaction&.isolation == :buffered_mutations
     end
 
-    def self._insert_record values, returning = []
-      if !(buffered_mutations? || (primary_key && values.is_a?(Hash))) || !spanner_adapter?
+    def self._should_use_standard_insert_record? values
+      !(buffered_mutations? || (primary_key && values.is_a?(Hash))) || !spanner_adapter?
+    end
+
+    def self._internal_insert_record values
+      if ActiveRecord.gem_version < VERSION_7_2
+        _insert_record values
+      else
+        _insert_record nil, values
+      end
+    end
+
+    def self._insert_record *args
+      if ActiveRecord.gem_version < VERSION_7_2
+        values, returning = args
+      else
+        _connection, values, returning = args
+      end
+
+      if _should_use_standard_insert_record? values
         return super values if ActiveRecord.gem_version < VERSION_7_1
         return super
       end
@@ -111,8 +130,20 @@ module ActiveRecord
       _buffer_record values, :insert_or_update, returning
     end
 
-    def self.insert_all _attributes, **_kwargs
-      raise NotImplementedError, "Cloud Spanner does not support skip_duplicates. Use insert! or upsert instead."
+    def self.insert_all attributes, returning: nil, **_kwargs
+      if active_transaction? && buffered_mutations?
+        raise NotImplementedError,
+              "Spanner does not support skip_duplicates for mutations. " \
+              "Use a transaction that uses DML, or use insert! or upsert instead."
+      end
+      super
+    end
+
+    def self.insert! attributes, returning: nil, **kwargs
+      return super unless spanner_adapter?
+      return super if active_transaction? && !buffered_mutations?
+
+      insert_all! [attributes], returning: returning, **kwargs
     end
 
     def self.insert_all! attributes, returning: nil, **_kwargs
@@ -123,24 +154,27 @@ module ActiveRecord
       # The mutations will be sent as one batch when the transaction is committed.
       if active_transaction?
         attributes.each do |record|
-          _insert_record record
+          _internal_insert_record record
         end
       else
         transaction isolation: :buffered_mutations do
           attributes.each do |record|
-            _insert_record record
+            _internal_insert_record record
           end
         end
       end
     end
 
-    def self.upsert_all attributes, returning: nil, unique_by: nil, **_kwargs
+    def self.upsert attributes, returning: nil, **kwargs
       return super unless spanner_adapter?
-      if active_transaction? && !buffered_mutations?
-        raise NotImplementedError, "Cloud Spanner does not support upsert using DML. " \
-                                   "Use upsert outside a transaction block or in a transaction " \
-                                   "block with isolation: :buffered_mutations"
-      end
+      return super if active_transaction? && !buffered_mutations?
+
+      upsert_all [attributes], returning: returning, **kwargs
+    end
+
+    def self.upsert_all attributes, returning: nil, unique_by: nil, **kwargs
+      return super unless spanner_adapter?
+      return super if active_transaction? && !buffered_mutations?
 
       # This might seem inefficient, but is actually not, as it is only buffering a mutation locally.
       # The mutations will be sent as one batch when the transaction is committed.

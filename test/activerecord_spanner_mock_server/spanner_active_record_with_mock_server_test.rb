@@ -18,9 +18,18 @@ module MockServerTests
     VERSION_7_1_0 = Gem::Version.create('7.1.0')
 
     def test_insert
-      singer = { first_name: "Alice", last_name: "Ecila" }
+      sql = "INSERT OR IGNORE INTO `singers` (`first_name`,`last_name`) VALUES ('Alice', 'Ecila')"
+      @mock.put_statement_result sql, StatementResult.new(1)
 
-      assert_raises(NotImplementedError) { Singer.insert(singer) }
+      singer = { first_name: "Alice", last_name: "Ecila" }
+      Singer.insert(singer)
+
+      execute_requests = @mock.requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == sql }
+      assert_equal 1, execute_requests.length
+      commit_requests = @mock.requests.select { |req| req.is_a?(CommitRequest) }
+      assert_equal 1, commit_requests.length
+      mutations = commit_requests[0].mutations
+      assert_equal 0, mutations.length
     end
 
     def test_insert_other_adapter
@@ -76,6 +85,39 @@ module MockServerTests
       assert_equal "first_name", mutation.insert.columns[0]
       assert_equal "last_name", mutation.insert.columns[1]
       assert_equal "id", mutation.insert.columns[2]
+    end
+
+    def test_insert_with_disabled_prepared_statements
+      if ActiveRecord.respond_to?(:disable_prepared_statements)
+        ActiveRecord.disable_prepared_statements = true
+        ActiveRecord::Base.establish_connection(
+          adapter: "spanner",
+          emulator_host: "localhost:#{@port}",
+          project: "test-project",
+          instance: "test-instance",
+          database: "testdb",
+        )
+        assert ActiveRecord::Base.connection.prepared_statements?
+      end
+
+      insert_sql = "INSERT INTO `singers` (`first_name`, `last_name`, `id`) VALUES (@p1, @p2, @p3)"
+      @mock.put_statement_result insert_sql, StatementResult.new(1)
+      ActiveRecord::Base.transaction do
+        singer = { first_name: "Alice", last_name: "Ecila" }
+        Singer.create singer
+      end
+
+      requests = @mock.requests
+      request = requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == insert_sql }.first
+      assert_equal "Alice", request.params["p1"]
+      assert_equal "Ecila", request.params["p2"]
+      assert_equal :STRING, request.param_types["p1"].code
+      assert_equal :STRING, request.param_types["p2"].code
+      assert_equal :INT64, request.param_types["p3"].code
+    ensure
+      if ActiveRecord.respond_to?(:disable_prepared_statements)
+        ActiveRecord.disable_prepared_statements = false
+      end
     end
 
     def test_upsert
@@ -324,6 +366,8 @@ module MockServerTests
     end
 
     def test_create_singer_with_last_performance_as_non_iso_string
+      return if "#{RUBY_VERSION}" < "3" && ActiveRecord::gem_version >= VERSION_7_1_0
+
       insert_sql = "INSERT INTO `singers` (`first_name`, `last_name`, `last_performance`, `id`) VALUES (@p1, @p2, @p3, @p4)"
       @mock.put_statement_result insert_sql, StatementResult.new(1)
 
@@ -1114,12 +1158,16 @@ module MockServerTests
     end
 
     def test_insert_all
+      sql = "INSERT OR IGNORE INTO `singers` (`id`,`first_name`,`last_name`) " +
+            "VALUES (1, 'Dave', 'Allison'), (2, 'Alice', 'Davidson'), (3, 'Rene', 'Henderson')"
+      @mock.put_statement_result sql, StatementResult.new(3)
+
       values = [
         {id: 1, first_name: "Dave", last_name: "Allison"},
         {id: 2, first_name: "Alice", last_name: "Davidson"},
         {id: 3, first_name: "Rene", last_name: "Henderson"},
       ]
-      assert_raises(NotImplementedError) { Singer.insert_all values }
+      Singer.insert_all values
     end
 
     def test_insert_all_bang_mutations
@@ -1189,17 +1237,24 @@ module MockServerTests
     end
 
     def test_upsert_all_dml
+      sql = "INSERT OR UPDATE INTO `singers` (`id`,`first_name`,`last_name`) " +
+            "VALUES (1, 'Dave', 'Allison'), (2, 'Alice', 'Davidson'), (3, 'Rene', 'Henderson')"
+      @mock.put_statement_result sql, StatementResult.new(3)
+
       values = [
         {id: 1, first_name: "Dave", last_name: "Allison"},
         {id: 2, first_name: "Alice", last_name: "Davidson"},
         {id: 3, first_name: "Rene", last_name: "Henderson"},
       ]
-      err = assert_raises(NotImplementedError) do
-        Singer.transaction do
-          Singer.upsert_all values
-        end
+      Singer.transaction do
+        Singer.upsert_all values
       end
-      assert_match "Use upsert outside a transaction block", err.message
+
+      commit_requests = @mock.requests.select { |req| req.is_a?(CommitRequest) }
+      assert_equal 1, commit_requests.length
+      assert_equal 0, commit_requests[0].mutations.length
+      execute_requests = @mock.requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == sql }
+      assert_equal 1, execute_requests.length
     end
 
     private
