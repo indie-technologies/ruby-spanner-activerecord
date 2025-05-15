@@ -71,6 +71,9 @@ module ActiveRecord
       # Determines whether or not to log query binds when executing statements
       class_attribute :log_statement_binds, instance_writer: false, default: false
 
+      attr_accessor :default_sequence_kind
+      attr_accessor :use_client_side_id_for_mutations
+
       def initialize config_or_deprecated_connection, deprecated_logger = nil,
                      deprecated_connection_options = nil, deprecated_config = nil
         if config_or_deprecated_connection.is_a? Hash
@@ -86,6 +89,25 @@ module ActiveRecord
         end
         # Spanner does not support unprepared statements
         @prepared_statements = true
+        # The default for default_sequence_kind will be changed to BIT_REVERSED_POSITIVE
+        # in the next major version. The default value is currently DISABLED to prevent
+        # breaking changes to existing code.
+        @default_sequence_kind = @config.fetch :default_sequence_kind, "DISABLED"
+        @use_auto_increment = @default_sequence_kind&.casecmp? "AUTO_INCREMENT"
+        @auto_increment_disabled = @default_sequence_kind&.casecmp? "DISABLED"
+        @use_client_side_id_for_mutations = self.class.type_cast_config_to_boolean(
+          @config.fetch(:use_client_side_id_for_mutations, false)
+        )
+      end
+
+      def use_auto_increment?
+        "AUTO_INCREMENT".casecmp?(@default_sequence_kind || "")
+      end
+
+      def use_identity?
+        !use_auto_increment? \
+        && @default_sequence_kind \
+        && !@default_sequence_kind.casecmp?("DISABLED")
       end
 
       def max_identifier_length
@@ -128,7 +150,8 @@ module ActiveRecord
       end
 
       # Spanner Connection API
-      delegate :ddl_batch, :ddl_batch?, :start_batch_ddl, :abort_batch, :run_batch, to: :@connection
+      delegate :ddl_batch, :ddl_batch?, :start_batch_ddl, :abort_batch, :run_batch,
+               :isolation_level, :isolation_level=, to: :@connection
 
       def current_spanner_transaction
         @connection.current_transaction
@@ -146,6 +169,10 @@ module ActiveRecord
 
       def supports_explain?
         false
+      end
+
+      def supports_transaction_isolation?
+        true
       end
 
       def supports_foreign_keys?
@@ -276,7 +303,9 @@ module ActiveRecord
       end
 
       def transform sql
-        if ActiveRecord::VERSION::MAJOR >= 7
+        if ActiveRecord::VERSION::MAJOR >= 8
+          preprocess_query sql
+        elsif ActiveRecord::VERSION::MAJOR == 7
           transform_query sql
         else
           sql
@@ -284,12 +313,23 @@ module ActiveRecord
       end
 
       # Overwrite the standard log method to be able to translate exceptions.
-      def log sql, name = "SQL", binds = [], type_casted_binds = [], statement_name = nil, *args
-        super
-      rescue ActiveRecord::StatementInvalid
-        raise
-      rescue StandardError => e
-        raise translate_exception_class(e, sql, binds)
+      # sql, name = "SQL", binds = [], type_casted_binds = [], async: false, &block
+      if ActiveRecord::VERSION::MAJOR >= 8
+        def log sql, name = "SQL", binds = [], type_casted_binds = [], async: false, &block
+          super
+        rescue ActiveRecord::StatementInvalid
+          raise
+        rescue StandardError => e
+          raise translate_exception_class(e, sql, binds)
+        end
+      else
+        def log sql, name = "SQL", binds = [], type_casted_binds = [], statement_name = nil, *args
+          super
+        rescue ActiveRecord::StatementInvalid
+          raise
+        rescue StandardError => e
+          raise translate_exception_class(e, sql, binds)
+        end
       end
 
       def translate_exception exception, message:, sql:, binds:

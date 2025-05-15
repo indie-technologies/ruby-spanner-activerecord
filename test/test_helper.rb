@@ -4,6 +4,7 @@
 # license that can be found in the LICENSE file or at
 # https://opensource.org/licenses/MIT.
 
+require "logger" # https://github.com/rails/rails/issues/54260
 require "minitest/autorun"
 require "minitest/focus"
 require "minitest/rg"
@@ -297,5 +298,14 @@ module MockGoogleSpanner
 
       job
     end
+  end
+end
+
+module Kernel
+  # Monkey-patch Kernel.exit to call exit! instead.
+  # This prevents the tests from getting stuck after running (probably) due to
+  # gRPC connections that have not been closed yet.
+  def exit status = true
+    exit! status
   end
 end

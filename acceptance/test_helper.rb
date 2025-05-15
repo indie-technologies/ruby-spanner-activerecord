@@ -5,6 +5,7 @@
 # https://opensource.org/licenses/MIT.
 
 gem "minitest"
+require "logger" # https://github.com/rails/rails/issues/54260
 require "minitest/autorun"
 require "minitest/focus"
 require "minitest/rg"
@@ -26,14 +27,27 @@ end
 $spanner_test_database = "ar-test-#{SecureRandom.hex 4}"
 
 def connector_config
-  {
-    "adapter" => "spanner",
-    "emulator_host" => ENV["SPANNER_EMULATOR_HOST"],
-    "project" => ENV["SPANNER_TEST_PROJECT"],
-    "instance" => ENV["SPANNER_TEST_INSTANCE"],
-    "credentials" => ENV["SPANNER_TEST_KEYFILE"],
-    "database" => $spanner_test_database
-  }
+  if ActiveRecord.gem_version >= Gem::Version.create("7.1.0")
+    {
+      "adapter" => "spanner",
+      "emulator_host" => ENV["SPANNER_EMULATOR_HOST"],
+      "project" => ENV["SPANNER_TEST_PROJECT"],
+      "instance" => ENV["SPANNER_TEST_INSTANCE"],
+      "credentials" => ENV["SPANNER_TEST_KEYFILE"],
+      "database" => $spanner_test_database,
+      "default_sequence_kind" => "BIT_REVERSED_POSITIVE",
+      "use_client_side_id_for_mutations" => true,
+    }
+  else
+    {
+      "adapter" => "spanner",
+      "emulator_host" => ENV["SPANNER_EMULATOR_HOST"],
+      "project" => ENV["SPANNER_TEST_PROJECT"],
+      "instance" => ENV["SPANNER_TEST_INSTANCE"],
+      "credentials" => ENV["SPANNER_TEST_KEYFILE"],
+      "database" => $spanner_test_database,
+    }
+  end
 end
 
 def spanner
@@ -174,6 +188,7 @@ module SpannerAdapter
         unless @skip_test_table_create
           connection.drop_table :test_models, if_exists: true
         end
+        ActiveRecord::Base.connection_pool.disconnect!
 
         super
       end
@@ -259,8 +274,19 @@ module SpannerAdapter
   ActiveSupport::Notifications.subscribe("sql.active_record", SQLCounter.new)
 end
 
+module Kernel
+  # Monkey-patch Kernel.exit to call exit! instead.
+  # This prevents the tests from getting stuck after running (probably) due to
+  # gRPC connections that have not been closed yet.
+  def exit status = true
+    exit! status
+  end
+end
+
 Minitest.after_run do
   drop_test_database
+  ActiveRecord::Base.connection_pool.disconnect!
+  ActiveRecordSpannerAdapter::Connection.reset_information_schemas!
 end
 
 create_test_database

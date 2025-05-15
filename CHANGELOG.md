@@ -1,5 +1,39 @@
 # Changelog
 
+### 2.2.0 (2025-04-03)
+
+#### Features
+
+* transaction isolation level ([#355](https://github.com/googleapis/ruby-spanner-activerecord/issues/355)) 
+
+### 2.1.0 (2025-03-17)
+
+#### Features
+
+* support IDENTITY columns for auto-generated primary keys ([#352](https://github.com/googleapis/ruby-spanner-activerecord/issues/352)) 
+#### Documentation
+
+* add a test to verify that FOR UPDATE can be used ([#348](https://github.com/googleapis/ruby-spanner-activerecord/issues/348)) 
+* update README with the correct supported versions ([#349](https://github.com/googleapis/ruby-spanner-activerecord/issues/349)) 
+
+### 2.0.0 (2025-01-23)
+
+### ⚠ BREAKING CHANGES
+
+* drop support for Rails 6.1 ([#346](https://github.com/googleapis/ruby-spanner-activerecord/issues/346))
+* deserialize BYTES to StringIO ([#343](https://github.com/googleapis/ruby-spanner-activerecord/issues/343))
+
+#### Features
+
+* drop support for Rails 6.1 ([#346](https://github.com/googleapis/ruby-spanner-activerecord/issues/346)) 
+* support Rails 8.0 ([#331](https://github.com/googleapis/ruby-spanner-activerecord/issues/331)) 
+#### Bug Fixes
+
+* deserialize BYTES to StringIO ([#343](https://github.com/googleapis/ruby-spanner-activerecord/issues/343)) 
+#### Documentation
+
+* add rails dbconsole to list of limitations ([#224](https://github.com/googleapis/ruby-spanner-activerecord/issues/224)) 
+
 ### 1.8.0 (2024-12-12)
 
 #### Features

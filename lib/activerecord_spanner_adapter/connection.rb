@@ -10,12 +10,16 @@ require "activerecord_spanner_adapter/information_schema"
 
 module ActiveRecordSpannerAdapter
   class Connection
-    attr_reader :instance_id, :database_id, :spanner
+    attr_reader :instance_id
+    attr_reader :database_id
+    attr_reader :spanner
     attr_accessor :current_transaction
+    attr_accessor :isolation_level
 
     def initialize config
       @instance_id = config[:instance]
       @database_id = config[:database]
+      @isolation_level = config[:isolation_level]
       @spanner = self.class.spanners config
     end
 
@@ -40,12 +44,15 @@ module ActiveRecordSpannerAdapter
     # Call this method if you drop and recreate a database with the same name
     # to prevent the cached information to be used for the new database.
     def self.reset_information_schemas!
+      @information_schemas.each_value do |info_schema|
+        info_schema.connection.disconnect!
+      end
       @information_schemas = {}
     end
 
     def self.information_schema config
       @information_schemas ||= {}
-      @information_schemas[database_path(config)] ||= \
+      @information_schemas[database_path(config)] ||=
         ActiveRecordSpannerAdapter::InformationSchema.new new(config)
     end
 
@@ -202,7 +209,7 @@ module ActiveRecordSpannerAdapter
 
     def execute_query sql, params: nil, types: nil, single_use_selector: nil, request_options: nil
       if params
-        converted_params, types = \
+        converted_params, types =
           Google::Cloud::Spanner::Convert.to_input_params_and_types(
             params, types
           )
@@ -217,6 +224,7 @@ module ActiveRecordSpannerAdapter
       execute_sql_request sql, converted_params, types, selector, request_options
     end
 
+    # rubocop:disable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
     def execute_sql_request sql, converted_params, types, selector, request_options = nil
       res = session.execute_query \
         sql,
@@ -224,7 +232,7 @@ module ActiveRecordSpannerAdapter
         types: types,
         transaction: selector,
         request_options: request_options,
-        seqno: (current_transaction&.next_sequence_number)
+        seqno: current_transaction&.next_sequence_number
       current_transaction.grpc_transaction = res.metadata.transaction \
           if current_transaction && res&.metadata&.transaction
       res
@@ -252,6 +260,7 @@ module ActiveRecordSpannerAdapter
       # It was not the first statement, so propagate the error.
       raise
     end
+    # rubocop:enable Metrics/AbcSize, Metrics/CyclomaticComplexity, Metrics/PerceivedComplexity
 
     # Creates a transaction using a BeginTransaction RPC. This is used if the first statement of a
     # transaction fails, as that also means that no transaction id was returned.
@@ -267,7 +276,7 @@ module ActiveRecordSpannerAdapter
 
     def begin_transaction isolation = nil
       raise "Nested transactions are not allowed" if current_transaction&.active?
-      self.current_transaction = Transaction.new self, isolation
+      self.current_transaction = Transaction.new self, isolation || @isolation_level
       current_transaction.begin
       current_transaction
     end
@@ -283,7 +292,7 @@ module ActiveRecordSpannerAdapter
     end
 
     def transaction_selector
-      return current_transaction&.transaction_selector if current_transaction&.active?
+      current_transaction&.transaction_selector if current_transaction&.active?
     end
 
     def truncate table_name

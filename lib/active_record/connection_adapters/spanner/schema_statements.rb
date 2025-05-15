@@ -21,8 +21,6 @@ module ActiveRecord
       # [Schema Doc](https://cloud.google.com/spanner/docs/information-schema)
       #
       module SchemaStatements
-        VERSION_6_1_0 = Gem::Version.create "6.1.0"
-        VERSION_6_0_3 = Gem::Version.create "6.0.3"
         VERSION_7_2 = Gem::Version.create "7.2.0"
 
         def current_database
@@ -109,8 +107,7 @@ module ActiveRecord
         end
 
         def rename_table _table_name, _new_name
-          raise ActiveRecordSpannerAdapter::NotSupportedError, \
-                "rename_table is not implemented"
+          raise ActiveRecordSpannerAdapter::NotSupportedError, "rename_table is not implemented"
         end
 
         # Column
@@ -126,18 +123,20 @@ module ActiveRecord
             fetch_type_metadata(field.spanner_type,
                                 field.ordinal_position,
                                 field.allow_commit_timestamp,
-                                field.generated),
+                                field.generated,
+                                is_identity: field.is_identity),
             field.nullable,
             field.default_function,
             primary_key: field.primary_key
         end
 
-        def fetch_type_metadata sql_type, ordinal_position = nil, allow_commit_timestamp = nil, generated = nil
+        def fetch_type_metadata sql_type, ordinal_position = nil, allow_commit_timestamp = nil, generated = nil,
+                                is_identity: false
           Spanner::TypeMetadata.new \
             super(sql_type),
             ordinal_position: ordinal_position,
             allow_commit_timestamp: allow_commit_timestamp,
-            generated: generated
+            generated: generated, is_identity: is_identity
         end
 
         def add_column table_name, column_name, type, **options
@@ -168,20 +167,14 @@ module ActiveRecord
           execute_schema_statements statements
         end
 
-        if ActiveRecord.gem_version < VERSION_6_1_0
-          def remove_columns table_name, *column_names
-            _remove_columns table_name, *column_names
-          end
-        else
-          def remove_columns table_name, *column_names, _type: nil, **_options
-            _remove_columns table_name, *column_names
-          end
+        def remove_columns table_name, *column_names, _type: nil, **_options
+          _remove_columns table_name, *column_names
         end
 
         def _remove_columns table_name, *column_names
           if column_names.empty?
-            raise ArgumentError, "You must specify at least one column name. "\
-              "Example: remove_columns(:people, :first_name)"
+            raise ArgumentError, "You must specify at least one column name. " \
+                                 "Example: remove_columns(:people, :first_name)"
           end
 
           statements = []
@@ -193,14 +186,8 @@ module ActiveRecord
           execute_schema_statements statements
         end
 
-        if ActiveRecord.gem_version < VERSION_6_1_0
-          def change_column table_name, column_name, type, options = {}
-            _change_column table_name, column_name, type, **options
-          end
-        else
-          def change_column table_name, column_name, type, **options
-            _change_column table_name, column_name, type, **options
-          end
+        def change_column table_name, column_name, type, **options
+          _change_column table_name, column_name, type, **options
         end
 
         def change_column_null table_name, column_name, null, _default = nil
@@ -208,14 +195,12 @@ module ActiveRecord
         end
 
         def change_column_default _table_name, _column_name, _default_or_changes
-          raise ActiveRecordSpannerAdapter::NotSupportedError, \
-                "change column with default value not supported."
+          raise ActiveRecordSpannerAdapter::NotSupportedError, "change column with default value not supported."
         end
 
         def rename_column table_name, column_name, new_column_name
           if ActiveRecord::Base.connection.ddl_batch?
-            raise ActiveRecordSpannerAdapter::NotSupportedError, \
-                  "rename_column in a DDL Batch is not supported."
+            raise ActiveRecordSpannerAdapter::NotSupportedError, "rename_column in a DDL Batch is not supported."
           end
           column = information_schema do |i|
             i.table_column table_name, column_name
@@ -280,16 +265,9 @@ module ActiveRecord
           execute_schema_statements schema_creation.accept(id)
         end
 
-        if ActiveRecord.gem_version < VERSION_6_1_0
-          def remove_index table_name, options = {}
-            index_name = index_name_for_remove table_name, options
-            execute "DROP INDEX #{quote_table_name index_name}"
-          end
-        else
-          def remove_index table_name, column_name = nil, **options
-            index_name = index_name_for_remove table_name, column_name, options
-            execute "DROP INDEX #{quote_table_name index_name}"
-          end
+        def remove_index table_name, column_name = nil, **options
+          index_name = index_name_for_remove table_name, column_name, options
+          execute "DROP INDEX #{quote_table_name index_name}"
         end
 
         def rename_index table_name, old_name, new_name
@@ -358,14 +336,8 @@ module ActiveRecord
           end
         end
 
-        if ActiveRecord.gem_version < VERSION_6_0_3
-          def add_foreign_key from_table, to_table, options = {}
-            _add_foreign_key from_table, to_table, **options
-          end
-        else
-          def add_foreign_key from_table, to_table, **options
-            _add_foreign_key from_table, to_table, **options
-          end
+        def add_foreign_key from_table, to_table, **options
+          _add_foreign_key from_table, to_table, **options
         end
 
         def _add_foreign_key from_table, to_table, **options
@@ -508,8 +480,8 @@ module ActiveRecord
           type ||= column.type
           options[:null] = column.null unless options.key? :null
 
-          if ["STRING", "BYTES"].include? type
-            options[:limit] = column.limit unless options.key? :limit
+          if ["STRING", "BYTES"].include?(type) && !options.key?(:limit)
+            options[:limit] = column.limit
           end
 
           # Only timestamp type can set commit timestamp
@@ -642,8 +614,7 @@ module ActiveRecord
         end
 
         def information_schema
-          info_schema = \
-            ActiveRecordSpannerAdapter::Connection.information_schema @config
+          info_schema = ActiveRecordSpannerAdapter::Connection.information_schema @config
 
           return info_schema unless block_given?
 
