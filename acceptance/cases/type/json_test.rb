@@ -27,6 +27,23 @@ module ActiveRecord
         record.reload
         assert_equal expected_hash, record.details
       end
+
+      def test_write_json
+        record = TestTypeModel.new details: "{\"this is a string (which is valid json), that happens to contain an valid encoded JSON object\":\"\"}"
+        record.save!
+        record.reload
+
+        # fails, with {"key"=>"this is a string (which is valid json), that happens to contain an encoded JSON object"}
+        # I can see how this expectation is desirable, yet not true to the JSON spec.
+        assert_equal "{\"this is a string (which is valid json), that happens to contain an valid encoded JSON object\":\"\"}", record.details
+      end
+
+      def test_float_serialization
+        record = TestTypeModel.create! details: { test: 41.021725 }
+        record.reload
+
+        assert_equal 41.021725, record.details[:test]
+      end
     end
   end
 end
