@@ -378,16 +378,18 @@ module ActiveRecord
 
         def to_types binds
           binds.enum_for(:each_with_index).to_h do |bind, i|
-            type = :INT64
-            if bind.respond_to? :type
-              type = ActiveRecord::Type::Spanner::SpannerActiveRecordConverter
-                     .convert_active_model_type_to_spanner(bind.type)
-            elsif bind.instance_of? Symbol
-              # This ensures that for example :environment is sent as the string 'environment' to Cloud Spanner.
-              type = :STRING
-            elsif bind.instance_of?(TrueClass) || bind.instance_of?(FalseClass)
-              type = :BOOL
-            end
+            type = if bind.respond_to? :type
+                     ActiveRecord::Type::Spanner::SpannerActiveRecordConverter
+                       .convert_active_model_type_to_spanner(bind.type)
+                   elsif bind.instance_of? Symbol
+                     # This ensures that for example :environment is sent as the string 'environment' to Cloud Spanner.
+                     :STRING
+                   else
+                     # Untyped binds (e.g. from `Arel.sql("name = ?", "abc")`) are bare Ruby values without an
+                     # attached ActiveModel type. Derive the Spanner type from the Ruby class, defaulting to INT64.
+                     ActiveRecord::Type::Spanner::SpannerActiveRecordConverter
+                       .convert_active_model_type_to_spanner(untyped_bind_type(bind)) || :INT64
+                   end
             [
               # Generates binds for named parameters in the format `@p1, @p2, ...`
               "p#{i + 1}", type
@@ -403,14 +405,29 @@ module ActiveRecord
                      # This ensures that for example :environment is sent as the string 'environment' to Cloud Spanner.
                      :STRING
                    else
-                     # The Cloud Spanner default type is INT64 if no other type is known.
-                     ActiveModel::Type::Integer
+                     # Untyped bind: pick the serializer that matches the type declared in `to_types`.
+                     untyped_bind_type bind
                    end
             bind_value = bind.respond_to?(:value) ? bind.value : bind
             value = ActiveRecord::Type::Spanner::SpannerActiveRecordConverter
                     .serialize_with_transaction_isolation_level(type, bind_value, :dml)
 
             ["p#{i + 1}", value]
+          end
+        end
+
+        # Maps a bare Ruby value (a bind without an attached ActiveModel type) to the ActiveModel type
+        # that should be used to declare and serialize it. Returns nil for values that are not recognized,
+        # which keeps the historical behavior: the bind is declared as INT64 and the value is sent as-is.
+        def untyped_bind_type value
+          case value
+          when ::String then ActiveModel::Type::String.new
+          when true, false then ActiveModel::Type::Boolean.new
+          when ::Float then ActiveModel::Type::Float.new
+          when ::BigDecimal then ActiveModel::Type::Decimal.new
+          # DateTime is a subclass of Date, so it must be matched before Date.
+          when ::Time, ::DateTime then ActiveRecord::Type::Spanner::Time.new
+          when ::Date then ActiveModel::Type::Date.new
           end
         end
 
