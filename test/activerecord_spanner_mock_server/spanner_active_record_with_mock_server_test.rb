@@ -698,6 +698,8 @@ module MockServerTests
     end
 
     def test_untyped_binds_from_arel_sql_are_typed_by_ruby_class
+      skip "Bound SQL literals require Rails version 7.1 or higher" if ActiveRecord.version < Gem::Version.create("7.1.0")
+
       select_sql = "SELECT `singers`.* FROM `singers` WHERE first_name = @p1 AND active = @p2 AND weight = @p3 " \
                    "AND balance = @p4 AND last_performance = @p5 AND created_at = @p6 AND birth_date = @p7 AND age = @p8"
       @mock.put_statement_result select_sql, MockServerTests::create_random_singers_result(1)
