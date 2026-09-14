@@ -7,10 +7,18 @@
 require "google/cloud/spanner"
 
 spanner = Google::Cloud::Spanner.new project: "test-project", emulator_host: "localhost:9010"
-job = spanner.create_instance "test-instance",
-                              name: "Test Instance",
-                              config: "emulator-config",
-                              nodes: 1
+# Container startup completes before the emulator accepts RPCs.
+deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 30
+begin
+  job = spanner.create_instance "test-instance",
+                                name: "Test Instance",
+                                config: "emulator-config",
+                                nodes: 1
+rescue Google::Cloud::UnavailableError
+  raise if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+  sleep 1
+  retry
+end
 job.wait_until_done!
 
 instance = spanner.instance "test-instance"
