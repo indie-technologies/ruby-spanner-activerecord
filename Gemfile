@@ -6,6 +6,8 @@ gemspec
 ar_version = ENV.fetch("AR_VERSION", "~> 7.1.0")
 gem "activerecord", ar_version
 gem "ostruct"
+# Rails 7 and docker-api still use JSON options removed in JSON 3.
+gem "json", "< 3"
 gem "minitest", "~> 5.27.0"
 gem "minitest-rg", "~> 5.4.0"
 gem "pry", "~> 0.14.2"
