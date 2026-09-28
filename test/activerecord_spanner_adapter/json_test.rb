@@ -89,11 +89,35 @@ class SpannerJsonTest < Minitest::Test
   end
 
   def test_does_not_replace_global_float_or_json_encoding
-    assert_equal "1.0e-07", 1.0e-7.to_s
-    assert_nil Float.instance_method(:to_s).source_location
-    refute_equal ActiveRecordSpannerAdapter::JsonEncoder, ActiveSupport::JSON::Encoding.json_encoder
-    assert_equal JSON.generate(1.240425), ActiveSupport::JSON.encode(1.240425)
-    assert_equal ActiveSupport::JSON.encode(1.240425), ActiveRecord::Type::Json.new.serialize(1.240425)
+    script = <<~RUBY
+      gem "json", #{JSON::VERSION.inspect}
+      gem "activesupport", #{ActiveSupport::VERSION::STRING.inspect}
+      gem "activerecord", #{ActiveRecord::VERSION::STRING.inspect}
+      require "logger"
+      require "active_record"
+      # Rails 7.0 provides its own Float#to_s wrapper.
+      require "active_support/core_ext/numeric"
+      value = { amounts: [1.240425, 0.0023529, 1.0e-7, -0.0], text: "<>&" }
+      original_float_to_s = Float.instance_method(:to_s)
+      original_float_strings = value[:amounts].map(&:to_s)
+      original_encoder = ActiveSupport::JSON::Encoding.json_encoder
+      original_json = JSON.generate(value)
+      original_active_support_json = ActiveSupport::JSON.encode(value)
+      original_record_json = ActiveRecord::Type::Json.new.serialize(value)
+
+      require "activerecord-spanner-adapter"
+      require "active_record/connection_adapters/spanner_adapter"
+
+      abort "Float#to_s changed" unless Float.instance_method(:to_s) == original_float_to_s
+      abort "Float formatting changed" unless value[:amounts].map(&:to_s) == original_float_strings
+      abort "global JSON encoder changed" unless ActiveSupport::JSON::Encoding.json_encoder == original_encoder
+      abort "JSON.generate changed" unless JSON.generate(value) == original_json
+      abort "ActiveSupport JSON changed" unless ActiveSupport::JSON.encode(value) == original_active_support_json
+      abort "ActiveRecord JSON changed" unless ActiveRecord::Type::Json.new.serialize(value) == original_record_json
+    RUBY
+    output, status = Open3.capture2e(RbConfig.ruby, "-I", $LOAD_PATH.join(File::PATH_SEPARATOR), "-e", script)
+
+    assert status.success?, output
   end
 
   def test_type_map_uses_spanner_json_for_json_and_json_arrays
