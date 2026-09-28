@@ -21,7 +21,7 @@ module ActiveRecord
     # Creates an object (or multiple objects) and saves it to the database. This method will use mutations instead
     # of DML if there is no active transaction, or if the active transaction has been created with the option
     # isolation: :buffered_mutations.
-    def self.create! attributes = nil, &block
+    def self.create!(attributes = nil, &)
       return super unless spanner_adapter?
       return super if active_transaction?
 
@@ -30,7 +30,7 @@ module ActiveRecord
       end
     end
 
-    def self.create attributes = nil, &block
+    def self.create(attributes = nil, &)
       return super unless spanner_adapter?
       return super if active_transaction?
 
@@ -47,6 +47,10 @@ module ActiveRecord
 
     def self.buffered_mutations?
       spanner_adapter? && connection&.current_spanner_transaction&.isolation == :buffered_mutations
+    end
+
+    def self.dml_batch(&)
+      connection.dml_batch(&)
     end
 
     def self._should_use_standard_insert_record? values

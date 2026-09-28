@@ -13,12 +13,14 @@ require "active_record/connection_adapters/spanner/database_statements"
 require "active_record/connection_adapters/spanner/schema_statements"
 require "active_record/connection_adapters/spanner/schema_cache"
 require "active_record/connection_adapters/spanner/schema_definitions"
+require "active_record/connection_adapters/spanner/type_mapping"
 require "active_record/connection_adapters/spanner/type_metadata"
 require "active_record/connection_adapters/spanner/quoting"
 require "active_record/type/spanner/array"
 require "active_record/type/spanner/bytes"
 require "active_record/type/spanner/spanner_active_record_converter"
 require "active_record/type/spanner/time"
+require "active_record/type/spanner/uuid"
 require "arel/visitors/spanner"
 require "activerecord_spanner_adapter/base"
 require "activerecord_spanner_adapter/connection"
@@ -46,23 +48,6 @@ module ActiveRecord
   module ConnectionAdapters
     class SpannerAdapter < AbstractAdapter
       ADAPTER_NAME = "spanner".freeze
-      NATIVE_DATABASE_TYPES = {
-        primary_key:  "INT64",
-        parent_key:   "INT64",
-        string:       { name: "STRING", limit: "MAX" },
-        text:         { name: "STRING", limit: "MAX" },
-        integer:      { name: "INT64" },
-        bigint:       { name: "INT64" },
-        float:        { name: "FLOAT64" },
-        decimal:      { name: "NUMERIC" },
-        numeric:      { name: "NUMERIC" },
-        datetime:     { name: "TIMESTAMP" },
-        time:         { name: "TIMESTAMP" },
-        date:         { name: "DATE" },
-        binary:       { name: "BYTES", limit: "MAX" },
-        boolean:      { name: "BOOL" },
-        json:         { name: "JSON" }
-      }.freeze
 
       include Spanner::Quoting
       include Spanner::DatabaseStatements
@@ -118,6 +103,10 @@ module ActiveRecord
         NATIVE_DATABASE_TYPES
       end
 
+      def self.native_database_types
+        NATIVE_DATABASE_TYPES
+      end
+
       # Database
 
       def self.database_exists? config
@@ -150,7 +139,8 @@ module ActiveRecord
       end
 
       # Spanner Connection API
-      delegate :ddl_batch, :ddl_batch?, :start_batch_ddl, :abort_batch, :run_batch,
+      delegate :dml_batch, :dml_batch?, :start_batch_dml,
+               :ddl_batch, :ddl_batch?, :start_batch_ddl, :abort_batch, :run_batch,
                :isolation_level, :isolation_level=, to: :@connection
 
       def current_spanner_transaction
@@ -261,6 +251,7 @@ module ActiveRecord
           register_class_with_limit m, %r{^STRING}i, Type::String
           m.register_type "TIMESTAMP", ActiveRecord::Type::Spanner::Time.new
           m.register_type "JSON", ActiveRecord::Type::Json.new
+          m.register_type "UUID", ActiveRecord::Type::Spanner::Uuid.new
 
           register_array_types m
         end
@@ -276,6 +267,7 @@ module ActiveRecord
           m.register_type %r{^ARRAY<STRING\((MAX|d+)\)>}i, Type::Spanner::Array.new(Type::String.new)
           m.register_type %r{^ARRAY<TIMESTAMP>}i, Type::Spanner::Array.new(ActiveRecord::Type::Spanner::Time.new)
           m.register_type %r{^ARRAY<JSON>}i, Type::Spanner::Array.new(ActiveRecord::Type::Json.new)
+          m.register_type %r{^ARRAY<UUID>}i, Type::Spanner::Array.new(ActiveRecord::Type::Spanner::Uuid.new)
         end
 
         def extract_limit sql_type

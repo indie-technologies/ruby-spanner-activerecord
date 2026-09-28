@@ -1,5 +1,31 @@
 # Changelog
 
+### 2.5.0 (2026-02-11)
+
+#### Features
+
+* add support for the UUID data type ([#387](https://github.com/googleapis/ruby-spanner-activerecord/issues/387)) 
+* support ActiveRecord 8.1.x ([#385](https://github.com/googleapis/ruby-spanner-activerecord/issues/385)) 
+#### Documentation
+
+* update README to reflect support for Rails 8.1.x ([#388](https://github.com/googleapis/ruby-spanner-activerecord/issues/388)) 
+
+### 2.4.0 (2026-02-04)
+
+#### Features
+
+* Add automatic PDML fallback for mutation limit errors ([#369](https://github.com/googleapis/ruby-spanner-activerecord/issues/369)) 
+* Adding support for exclude_txn_from_change_streams option ([#368](https://github.com/googleapis/ruby-spanner-activerecord/issues/368)) ([1b04c70](https://github.com/googleapis/ruby-spanner-activerecord/commit/1b04c70b4ecec62403449af11827d0f3587acfd0)), closes [#367](https://github.com/googleapis/ruby-spanner-activerecord/issues/367)
+* Batch DML support ([#370](https://github.com/googleapis/ruby-spanner-activerecord/issues/370)) 
+* support commit_options ([#364](https://github.com/googleapis/ruby-spanner-activerecord/issues/364)) ([0a1020a](https://github.com/googleapis/ruby-spanner-activerecord/commit/0a1020ac60ff9ddaae1634a2178a71bc0de9480c)), closes [#365](https://github.com/googleapis/ruby-spanner-activerecord/issues/365)
+
+### 2.3.0 (2025-05-30)
+
+#### Features
+
+* Add optimizer hint syntax to set a priority in request options ([#363](https://github.com/googleapis/ruby-spanner-activerecord/issues/363)) 
+* support ruby 3.4 ([#359](https://github.com/googleapis/ruby-spanner-activerecord/issues/359)) 
+
 ### 2.2.0 (2025-04-03)
 
 #### Features

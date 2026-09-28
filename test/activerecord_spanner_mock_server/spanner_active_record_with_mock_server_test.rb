@@ -6,6 +6,7 @@
 #
 # frozen_string_literal: true
 
+require "securerandom"
 require "sqlite3"
 require_relative "./base_spanner_mock_server_test"
 require_relative "models/other_adapter"
@@ -13,6 +14,8 @@ require_relative "models/other_adapter"
 module MockServerTests
   CommitRequest = Google::Cloud::Spanner::V1::CommitRequest
   ExecuteSqlRequest = Google::Cloud::Spanner::V1::ExecuteSqlRequest
+  BeginTransactionRequest = Google::Cloud::Spanner::V1::BeginTransactionRequest
+  ExecuteBatchDmlRequest = Google::Cloud::Spanner::V1::ExecuteBatchDmlRequest
 
   class SpannerActiveRecordMockServerTest < BaseSpannerMockServerTest
     VERSION_7_1_0 = Gem::Version.create('7.1.0')
@@ -147,6 +150,179 @@ module MockServerTests
       assert_equal "id", mutation.insert_or_update.columns[2]
     end
 
+    def test_insert_batch_dml
+      sql1 = "INSERT OR IGNORE INTO `singers` (`first_name`,`last_name`) VALUES ('Alice', 'Ecila')"
+      sql2 = "INSERT OR IGNORE INTO `singers` (`first_name`,`last_name`) VALUES ('Pete', 'Etep')"
+      @mock.put_statement_result sql1, StatementResult.new(1)
+      @mock.put_statement_result sql2, StatementResult.new(1)
+
+      singer1 = { first_name: "Alice", last_name: "Ecila" }
+      singer2 = { first_name: "Pete", last_name: "Etep" }
+      ActiveRecord::Base.transaction do
+        ActiveRecord::Base.dml_batch do
+          Singer.insert(singer1)
+          Singer.insert(singer2)
+        end
+      end
+
+      # This test should use BatchDML instead of individual ExecuteSqlRequests.
+      execute_requests = @mock.requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == sql1 }
+      assert_equal 0, execute_requests.length
+      execute_requests = @mock.requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == sql2 }
+      assert_equal 0, execute_requests.length
+      batch_requests = @mock.requests.select { |req| req.is_a?(ExecuteBatchDmlRequest) }
+      assert_equal 1, batch_requests.length
+      assert_equal 2, batch_requests.first.statements.length
+      assert_equal sql1, batch_requests.first.statements[0].sql
+      assert_equal sql2, batch_requests.first.statements[1].sql
+
+      # There should be only one transaction with no mutations.
+      commit_requests = @mock.requests.select { |req| req.is_a?(CommitRequest) }
+      assert_equal 1, commit_requests.length
+      mutations = commit_requests[0].mutations
+      assert_equal 0, mutations.length
+    end
+
+    def test_update_batch_dml
+      num_rows = 4
+      select_sql = "SELECT `singers`.* FROM `singers`"
+      @mock.put_statement_result select_sql, MockServerTests::create_random_singers_result(num_rows)
+      update_sql = "UPDATE `singers` SET `picture` = @p1 WHERE `singers`.`id` = @p2"
+      @mock.put_statement_result update_sql, StatementResult.new(1)
+
+      ActiveRecord::Base.transaction do
+        ActiveRecord::Base.dml_batch do
+          Singer.all.each do |singer|
+            singer.picture = Base64.encode64(SecureRandom.alphanumeric(SecureRandom.random_number(10..200)))
+            singer.save
+          end
+        end
+      end
+
+      # This test should use BatchDML instead of individual ExecuteSqlRequests.
+      execute_requests = @mock.requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == update_sql }
+      assert_equal 0, execute_requests.length
+      batch_requests = @mock.requests.select { |req| req.is_a?(ExecuteBatchDmlRequest) }
+      assert_equal 1, batch_requests.length
+      assert_equal num_rows, batch_requests.first.statements.length
+
+      # There should be only one transaction with no mutations.
+      commit_requests = @mock.requests.select { |req| req.is_a?(CommitRequest) }
+      assert_equal 1, commit_requests.length
+      mutations = commit_requests[0].mutations
+      assert_equal 0, mutations.length
+    end
+
+    def test_insert_batch_dml_error
+      sql1 = "INSERT OR IGNORE INTO `singers` (`first_name`,`last_name`) VALUES ('Alice', 'Ecila')"
+      sql2 = "INSERT OR IGNORE INTO `singers` (`first_name`,`last_name`) VALUES ('Pete', 'Etep')"
+      error = GRPC::BadStatus.new GRPC::Core::StatusCodes::INVALID_ARGUMENT, "Invalid value"
+      @mock.put_statement_result sql1, StatementResult.new(1)
+      @mock.put_statement_result sql2, StatementResult.new(error)
+
+      singer1 = { first_name: "Alice", last_name: "Ecila" }
+      singer2 = { first_name: "Pete", last_name: "Etep" }
+      ActiveRecord::Base.transaction do
+        err = assert_raises Google::Cloud::Spanner::BatchUpdateError do
+          ActiveRecord::Base.dml_batch do
+            Singer.insert(singer1)
+            Singer.insert(singer2)
+          end
+        end
+        # Batch DML returns an error with an array that contains the update counts
+        # of the successful statements. In this case, only the first statement
+        # succeeded.
+        assert_equal 1, err.row_counts.length
+      end
+
+      # This test should use BatchDML instead of individual ExecuteSqlRequests.
+      execute_requests = @mock.requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == sql1 }
+      assert_equal 0, execute_requests.length
+      execute_requests = @mock.requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == sql2 }
+      assert_equal 0, execute_requests.length
+      batch_requests = @mock.requests.select { |req| req.is_a?(ExecuteBatchDmlRequest) }
+      # The BatchDML request is NOT retried, because it returns the first result, a transaction AND an error.
+      assert_equal 1, batch_requests.length
+      assert_equal 2, batch_requests.first.statements.length
+      assert_equal sql1, batch_requests.first.statements[0].sql
+      assert_equal sql2, batch_requests.first.statements[1].sql
+
+      # There should be only one transaction with no mutations.
+      commit_requests = @mock.requests.select { |req| req.is_a?(CommitRequest) }
+      assert_equal 1, commit_requests.length
+      mutations = commit_requests[0].mutations
+      assert_equal 0, mutations.length
+    end
+
+    def test_insert_batch_dml_error_on_first
+      sql = "INSERT OR IGNORE INTO `singers` (`first_name`,`last_name`) VALUES ('Alice', 'Ecila')"
+      error = GRPC::BadStatus.new GRPC::Core::StatusCodes::INVALID_ARGUMENT, "Invalid value"
+      @mock.put_statement_result sql, StatementResult.new(error)
+
+      singer1 = { first_name: "Alice", last_name: "Ecila" }
+      singer2 = { first_name: "Pete", last_name: "Etep" }
+      ActiveRecord::Base.transaction do
+        err = assert_raises Google::Cloud::Spanner::BatchUpdateError do
+          ActiveRecord::Base.dml_batch do
+            Singer.insert(singer1)
+            Singer.insert(singer2)
+          end
+        end
+        # Batch DML returns an error with an array that contains the update counts
+        # of the successful statements. In this case, non succeeded.
+        assert_equal 0, err.row_counts.length
+      end
+
+      # This test should use BatchDML instead of individual ExecuteSqlRequests.
+      execute_requests = @mock.requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == sql }
+      assert_equal 0, execute_requests.length
+      batch_requests = @mock.requests.select { |req| req.is_a?(ExecuteBatchDmlRequest) }
+      # The BatchDML request is retried, because it does not return any results or a transaction.
+      assert_equal 2, batch_requests.length
+    end
+
+    def test_insert_batch_dml_aborted
+      sql1 = "INSERT OR IGNORE INTO `singers` (`first_name`,`last_name`) VALUES ('Alice', 'Ecila')"
+      sql2 = "INSERT OR IGNORE INTO `singers` (`first_name`,`last_name`) VALUES ('Pete', 'Etep')"
+      error = GRPC::BadStatus.new GRPC::Core::StatusCodes::ABORTED, "Transaction aborted"
+      @mock.put_statement_result sql1, StatementResult.new(1)
+      @mock.put_statement_result sql2, StatementResult.new(error)
+
+      singer1 = { first_name: "Alice", last_name: "Ecila" }
+      singer2 = { first_name: "Pete", last_name: "Etep" }
+      first = true
+      ActiveRecord::Base.transaction do
+        # Update the results of the second statement from ABORTED to success on the second attempt.
+        if first
+          first = false
+        else
+          @mock.put_statement_result sql2, StatementResult.new(1)
+        end
+        ActiveRecord::Base.dml_batch do
+          Singer.insert(singer1)
+          Singer.insert(singer2)
+        end
+      end
+
+      # This test should use BatchDML instead of individual ExecuteSqlRequests.
+      execute_requests = @mock.requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == sql1 }
+      assert_equal 0, execute_requests.length
+      execute_requests = @mock.requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == sql2 }
+      assert_equal 0, execute_requests.length
+      batch_requests = @mock.requests.select { |req| req.is_a?(ExecuteBatchDmlRequest) }
+      # The BatchDML request is retried, because the transaction is aborted.
+      assert_equal 2, batch_requests.length
+      assert_equal 2, batch_requests[1].statements.length
+      assert_equal sql1, batch_requests[1].statements[0].sql
+      assert_equal sql2, batch_requests[1].statements[1].sql
+
+      # There should be only one transaction with no mutations.
+      commit_requests = @mock.requests.select { |req| req.is_a?(CommitRequest) }
+      assert_equal 1, commit_requests.length
+      mutations = commit_requests[0].mutations
+      assert_equal 0, mutations.length
+    end
+
     def test_selects_all_singers_without_transaction
       sql = "SELECT `singers`.* FROM `singers`"
       @mock.put_statement_result sql, MockServerTests::create_random_singers_result(4)
@@ -190,6 +366,75 @@ module MockServerTests
         assert_equal :INT64, request.param_types["p2"].code
         assert_equal :INT64, request.param_types["p1"].code
       end
+    end
+
+    def test_update_all_on_table_with_sequence_falls_back_to_pdml
+      update_sql = "UPDATE `table_with_sequence` SET `name` = @p1 WHERE `table_with_sequence`.`id` = @p2"
+
+      mutation_limit_error = GRPC::InvalidArgument.new("The transaction contains too many mutations")
+
+      @mock.push_error(update_sql, mutation_limit_error)
+      @mock.put_statement_result(update_sql, StatementResult.new(1))
+
+      TableWithSequence.transaction isolation: :fallback_to_pdml do
+        TableWithSequence.where(id: 1).update_all(name: "New Foo Name")
+      end
+
+      # The first attempt should have failed with a TransactionMutationLimitExceededError.
+      #  The second attempt should have succeeded with a PDML transaction.
+      #  So we should have two requests for the same DML statement.
+      update_requests = @mock.requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == update_sql }
+      assert_equal 2, update_requests.length, "Should have been two attempts for the UPDATE DML"
+      
+      # A PDML transaction should have been started for the final, successful attempt.
+      pdml_begin_request = @mock.requests.find { |req| req.is_a?(Google::Cloud::Spanner::V1::BeginTransactionRequest) && req.options&.partitioned_dml }
+      refute_nil pdml_begin_request, "A BeginTransactionRequest for PDML should have been sent"
+
+      fallback_request = update_requests[1]
+      assert fallback_request.transaction&.id, "Fallback DML should run within a transaction that has an ID (created by the PDML transaction)"
+      assert_nil fallback_request.transaction&.begin, "Fallback DML should use the existing PDML transaction, not begin a new one"
+    end
+
+    def test_no_fallback_to_pdml_on_table_with_sequence_when_disabled
+      update_sql = "UPDATE `table_with_sequence` SET `name` = @p1 WHERE `table_with_sequence`.`id` = @p2"
+
+      mutation_limit_error = GRPC::InvalidArgument.new("The transaction contains too many mutations")
+      @mock.push_error(update_sql, mutation_limit_error)
+
+      err = assert_raises ActiveRecord::StatementInvalid do
+        TableWithSequence.transaction do
+          TableWithSequence.where(id: 1).update_all(name: "This name will not be updated")
+        end
+      end
+
+      assert_kind_of Google::Cloud::InvalidArgumentError, err.cause
+
+    
+      update_requests = @mock.requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == update_sql }
+      assert_equal 1, update_requests.length, "Should only have been two attempts for the UPDATE DML"
+
+      pdml_begin_request = @mock.requests.find { |req| req.is_a?(BeginTransactionRequest) && req.options&.partitioned_dml }
+      assert_nil pdml_begin_request, "No PDML transaction should have been started"
+    end
+
+    def test_no_fallback_to_pdml_on_table_with_sequence_when_error_is_not_valid
+
+      update_sql_regex = /UPDATE `table_with_sequence`/
+      other_error = GRPC::AlreadyExists.new("This is some other database error")
+      @mock.push_error(update_sql_regex, other_error)
+
+      err = assert_raises ActiveRecord::StatementInvalid do
+        TableWithSequence.transaction isolation: :fallback_to_pdml do
+          TableWithSequence.where(id: 1).update_all(name: "This name will not be updated")
+        end
+      end
+
+      assert_kind_of Google::Cloud::InvalidArgumentError, err.cause
+      update_requests = @mock.requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql.match(update_sql_regex) }
+      assert_equal 2, update_requests.length, "Should only have been one attempt for the UPDATE DML"
+
+      pdml_begin_request = @mock.requests.find { |req| req.is_a?(BeginTransactionRequest) && req.options&.partitioned_dml }
+      assert_nil pdml_begin_request, "No PDML transaction should have been started"
     end
 
     def test_selects_singers_with_condition
@@ -450,6 +695,57 @@ module MockServerTests
       request = @mock.requests.select {|req| req.is_a?(Google::Cloud::Spanner::V1::ExecuteSqlRequest) && req.sql == select_sql }.first
       assert_equal :TIMESTAMP, request.param_types["p1"].code
       assert_equal timestamp.utc.rfc3339(9), request.params["p1"]
+    end
+
+    def test_untyped_binds_from_arel_sql_are_typed_by_ruby_class
+      skip "Bound SQL literals require Rails version 7.1 or higher" if ActiveRecord.version < Gem::Version.create("7.1.0")
+
+      select_sql = "SELECT `singers`.* FROM `singers` WHERE first_name = @p1 AND active = @p2 AND weight = @p3 " \
+                   "AND balance = @p4 AND last_performance = @p5 AND created_at = @p6 AND birth_date = @p7 AND age = @p8"
+      @mock.put_statement_result select_sql, MockServerTests::create_random_singers_result(1)
+
+      time = ::Time.parse("2021-05-12T10:30:00+02:00")
+      date_time = ::DateTime.new(2021, 5, 12, 10, 30, 0, "+02:00")
+      Singer.where(
+        Arel.sql(
+          "first_name = ? AND active = ? AND weight = ? AND balance = ? AND last_performance = ? " \
+          "AND created_at = ? AND birth_date = ? AND age = ?",
+          "Alice", true, 1.5, BigDecimal("12.34"), time, date_time, ::Date.new(2021, 5, 12), 42
+        )
+      ).to_a
+
+      request = @mock.requests.select {|req| req.is_a?(Google::Cloud::Spanner::V1::ExecuteSqlRequest) && req.sql == select_sql }.first
+      refute_nil request
+      assert_equal :STRING, request.param_types["p1"].code
+      assert_equal "Alice", request.params["p1"]
+      assert_equal :BOOL, request.param_types["p2"].code
+      assert_equal true, request.params["p2"]
+      assert_equal :FLOAT64, request.param_types["p3"].code
+      assert_equal 1.5, request.params["p3"]
+      assert_equal :NUMERIC, request.param_types["p4"].code
+      assert_equal "12.34", request.params["p4"]
+      assert_equal :TIMESTAMP, request.param_types["p5"].code
+      assert_equal "2021-05-12T08:30:00.000000000Z", request.params["p5"]
+      assert_equal :TIMESTAMP, request.param_types["p6"].code
+      assert_equal "2021-05-12T08:30:00.000000000Z", request.params["p6"]
+      assert_equal :DATE, request.param_types["p7"].code
+      assert_equal "2021-05-12", request.params["p7"]
+      assert_equal :INT64, request.param_types["p8"].code
+      assert_equal "42", request.params["p8"]
+    end
+
+    def test_where_with_positional_string_placeholder
+      # Before ActiveRecord 8.1, `where("col = ?", value)` inlines the value into the SQL instead of binding it.
+      skip "Requires Rails version 8.1 or higher" if ActiveRecord.version < Gem::Version.create("8.1.0")
+      select_sql = "SELECT `singers`.* FROM `singers` WHERE (first_name = @p1)"
+      @mock.put_statement_result select_sql, MockServerTests::create_random_singers_result(1)
+
+      Singer.where("first_name = ?", "Alice").to_a
+
+      request = @mock.requests.select {|req| req.is_a?(Google::Cloud::Spanner::V1::ExecuteSqlRequest) && req.sql == select_sql }.first
+      refute_nil request
+      assert_equal :STRING, request.param_types["p1"].code
+      assert_equal "Alice", request.params["p1"]
     end
 
     def test_create_singer_with_picture
@@ -716,10 +1012,13 @@ module MockServerTests
     end
 
     def test_create_all_types_using_mutation
+      uuid_value = SecureRandom.uuid
+      uuid_array = [SecureRandom.uuid, nil, SecureRandom.uuid]
       AllTypes.create col_string: "string", col_int64: 100, col_float64: 3.14, col_numeric: 6.626, col_bool: true,
                       col_bytes: StringIO.new("bytes"), col_date: ::Date.new(2021, 6, 23),
                       col_timestamp: ::Time.new(2021, 6, 23, 17, 8, 21, "+02:00"),
                       col_json: { kind: "user_renamed", change: %w[jack john]},
+                      col_uuid: uuid_value,
                       col_array_string: ["string1", nil, "string2"],
                       col_array_int64: [100, nil, 200],
                       col_array_float64: [3.14, nil, 2.0/3.0],
@@ -730,7 +1029,8 @@ module MockServerTests
                       col_array_timestamp: [::Time.new(2021, 6, 23, 17, 8, 21, "+02:00"), nil, \
                                             ::Time.new(2021, 6, 24, 17, 8, 21, "+02:00")],
                       col_array_json: [{ kind: "user_renamed", change: %w[jack john]}, nil, \
-                                       { kind: "user_renamed", change: %w[alice meredith]}]
+                                       { kind: "user_renamed", change: %w[alice meredith]}],
+                      col_array_uuid: uuid_array
 
       commit_requests = @mock.requests.select { |req| req.is_a?(Google::Cloud::Spanner::V1::CommitRequest) }
       assert_equal 1, commit_requests.length
@@ -750,6 +1050,7 @@ module MockServerTests
       assert_equal "col_date", mutation.insert.columns[col_index += 1]
       assert_equal "col_timestamp", mutation.insert.columns[col_index += 1]
       assert_equal "col_json", mutation.insert.columns[col_index += 1]
+      assert_equal "col_uuid", mutation.insert.columns[col_index += 1]
 
       assert_equal "col_array_string", mutation.insert.columns[col_index += 1]
       assert_equal "col_array_int64", mutation.insert.columns[col_index += 1]
@@ -760,6 +1061,7 @@ module MockServerTests
       assert_equal "col_array_date", mutation.insert.columns[col_index += 1]
       assert_equal "col_array_timestamp", mutation.insert.columns[col_index += 1]
       assert_equal "col_array_json", mutation.insert.columns[col_index += 1]
+      assert_equal "col_array_uuid", mutation.insert.columns[col_index += 1]
 
       value_index = -1
       assert_equal 1, mutation.insert.values.length
@@ -772,6 +1074,7 @@ module MockServerTests
       assert_equal "2021-06-23", mutation.insert.values[0][value_index += 1]
       assert_equal "2021-06-23T15:08:21.000000000Z", mutation.insert.values[0][value_index += 1]
       assert_equal "{\"kind\":\"user_renamed\",\"change\":[\"jack\",\"john\"]}", mutation.insert.values[0][value_index += 1]
+      assert_equal uuid_value, mutation.insert.values[0][value_index += 1]
 
       assert_equal create_list_value(["string1", nil, "string2"]), mutation.insert.values[0][value_index += 1]
       assert_equal create_list_value(["100", nil, "200"]), mutation.insert.values[0][value_index += 1]
@@ -791,34 +1094,33 @@ module MockServerTests
           nil,
           "2021-06-24T15:08:21.000000000Z"
         ]), mutation.insert.values[0][value_index += 1]
-      json_list = create_list_value([
-                                      "{\"kind\":\"user_renamed\",\"change\":[\"jack\",\"john\"]}",
-                                      nil,
-                                      "{\"kind\":\"user_renamed\",\"change\":[\"alice\",\"meredith\"]}"
-                                    ])
       assert_equal create_list_value([
           "{\"kind\":\"user_renamed\",\"change\":[\"jack\",\"john\"]}",
           nil,
           "{\"kind\":\"user_renamed\",\"change\":[\"alice\",\"meredith\"]}"
         ]), mutation.insert.values[0][value_index += 1]
+      assert_equal create_list_value(uuid_array), mutation.insert.values[0][value_index += 1]
     end
 
     def test_create_all_types_using_dml
       sql = "INSERT INTO `all_types` (`col_string`, `col_int64`, `col_float64`, `col_numeric`, `col_bool`, " \
-            "`col_bytes`, `col_date`, `col_timestamp`, `col_json`, `col_array_string`, `col_array_int64`, " \
+            "`col_bytes`, `col_date`, `col_timestamp`, `col_json`, `col_uuid`, `col_array_string`, `col_array_int64`, " \
             "`col_array_float64`, `col_array_numeric`, `col_array_bool`, `col_array_bytes`, `col_array_date`, "\
-            "`col_array_timestamp`, `col_array_json`, `id`) "\
+            "`col_array_timestamp`, `col_array_json`, `col_array_uuid`, `id`) "\
             "VALUES (@p1, @p2, @p3, @p4, @p5, @p6, " \
             "@p7, @p8, @p9, @p10, @p11, " \
             "@p12, @p13, @p14, @p15, " \
-            "@p16, @p17, @p18, @p19)"
+            "@p16, @p17, @p18, @p19, @p20, @p21)"
       @mock.put_statement_result sql, StatementResult.new(1)
 
+      uuid_value = SecureRandom.uuid
+      uuid_array = [SecureRandom.uuid, nil, SecureRandom.uuid]
       AllTypes.transaction do
         AllTypes.create col_string: "string", col_int64: 100, col_float64: 3.14, col_numeric: 6.626, col_bool: true,
                         col_bytes: StringIO.new("bytes"), col_date: ::Date.new(2021, 6, 23),
                         col_timestamp: ::Time.new(2021, 6, 23, 17, 8, 21, "+02:00"),
                         col_json: { kind: "user_renamed", change: %w[jack john]},
+                        col_uuid: uuid_value,
                         col_array_string: ["string1", nil, "string2"],
                         col_array_int64: [100, nil, 200],
                         col_array_float64: [3.14, nil, 2.0/3.0],
@@ -829,7 +1131,8 @@ module MockServerTests
                         col_array_timestamp: [::Time.new(2021, 6, 23, 17, 8, 21, "+02:00"), nil, \
                                               ::Time.new(2021, 6, 24, 17, 8, 21, "+02:00")],
                         col_array_json: [{ kind: "user_renamed", change: %w[jack john]}, nil, \
-                                         { kind: "user_renamed", change: %w[alice meredith]}]
+                                         { kind: "user_renamed", change: %w[alice meredith]}],
+                        col_array_uuid: uuid_array
       end
 
       commit_requests = @mock.requests.select { |req| req.is_a?(Google::Cloud::Spanner::V1::CommitRequest) }
@@ -857,40 +1160,43 @@ module MockServerTests
       assert_equal :TIMESTAMP, request.param_types["p8"].code
       assert_equal "{\"kind\":\"user_renamed\",\"change\":[\"jack\",\"john\"]}", request.params["p9"]
       assert_equal :JSON, request.param_types["p9"].code
+      assert_equal uuid_value, request.params["p10"]
+      assert_equal :UUID, request.param_types["p10"].code
 
-      assert_equal create_list_value(["string1", nil, "string2"]), request.params["p10"]
-      assert_equal :ARRAY, request.param_types["p10"].code
-      assert_equal :STRING, request.param_types["p10"].array_element_type.code
-      assert_equal create_list_value(["100", nil, "200"]), request.params["p11"]
+      assert_equal create_list_value(["string1", nil, "string2"]), request.params["p11"]
       assert_equal :ARRAY, request.param_types["p11"].code
-      assert_equal :INT64, request.param_types["p11"].array_element_type.code
-      assert_equal create_list_value([3.14, nil, 2.0/3.0]), request.params["p12"]
+      assert_equal :STRING, request.param_types["p11"].array_element_type.code
+      assert_equal create_list_value(["100", nil, "200"]), request.params["p12"]
       assert_equal :ARRAY, request.param_types["p12"].code
-      assert_equal :FLOAT64, request.param_types["p12"].array_element_type.code
-      assert_equal create_list_value(["6.626", nil, "3.2"]), request.params["p13"]
+      assert_equal :INT64, request.param_types["p12"].array_element_type.code
+      assert_equal create_list_value([3.14, nil, 2.0/3.0]), request.params["p13"]
       assert_equal :ARRAY, request.param_types["p13"].code
-      assert_equal :NUMERIC, request.param_types["p13"].array_element_type.code
-      assert_equal create_list_value([true, nil, false]), request.params["p14"]
+      assert_equal :FLOAT64, request.param_types["p13"].array_element_type.code
+      assert_equal create_list_value(["6.626", nil, "3.2"]), request.params["p14"]
       assert_equal :ARRAY, request.param_types["p14"].code
-      assert_equal :BOOL, request.param_types["p14"].array_element_type.code
-      assert_equal create_list_value([Base64.urlsafe_encode64("bytes1"), nil, Base64.urlsafe_encode64("bytes2")]),
-                   request.params["p15"]
+      assert_equal :NUMERIC, request.param_types["p14"].array_element_type.code
+      assert_equal create_list_value([true, nil, false]), request.params["p15"]
       assert_equal :ARRAY, request.param_types["p15"].code
-      assert_equal :BYTES, request.param_types["p15"].array_element_type.code
-      assert_equal create_list_value(["2021-06-23", nil, "2021-06-24"]), request.params["p16"]
+      assert_equal :BOOL, request.param_types["p15"].array_element_type.code
+      assert_equal create_list_value([Base64.urlsafe_encode64("bytes1"), nil, Base64.urlsafe_encode64("bytes2")]),
+                   request.params["p16"]
       assert_equal :ARRAY, request.param_types["p16"].code
-      assert_equal :DATE, request.param_types["p16"].array_element_type.code
-      assert_equal create_list_value(["2021-06-23T15:08:21.000000000Z", nil, "2021-06-24T15:08:21.000000000Z"]),
-                   request.params["p17"]
+      assert_equal :BYTES, request.param_types["p16"].array_element_type.code
+      assert_equal create_list_value(["2021-06-23", nil, "2021-06-24"]), request.params["p17"]
       assert_equal :ARRAY, request.param_types["p17"].code
-      assert_equal :TIMESTAMP, request.param_types["p17"].array_element_type.code
+      assert_equal :DATE, request.param_types["p17"].array_element_type.code
       assert_equal create_list_value(["2021-06-23T15:08:21.000000000Z", nil, "2021-06-24T15:08:21.000000000Z"]),
-                   request.params["p17"]
+                   request.params["p18"]
       assert_equal :ARRAY, request.param_types["p18"].code
-      assert_equal :JSON, request.param_types["p18"].array_element_type.code
+      assert_equal :TIMESTAMP, request.param_types["p18"].array_element_type.code
       assert_equal create_list_value(["{\"kind\":\"user_renamed\",\"change\":[\"jack\",\"john\"]}", nil, \
                                       "{\"kind\":\"user_renamed\",\"change\":[\"alice\",\"meredith\"]}"]),
-                   request.params["p18"]
+                   request.params["p19"]
+      assert_equal :ARRAY, request.param_types["p19"].code
+      assert_equal :JSON, request.param_types["p19"].array_element_type.code
+      assert_equal create_list_value(uuid_array), request.params["p20"]
+      assert_equal :ARRAY, request.param_types["p20"].code
+      assert_equal :UUID, request.param_types["p20"].array_element_type.code
     end
 
     def test_get_json
@@ -922,6 +1228,39 @@ module MockServerTests
       row = AllTypes.find_by col_int64: 1
       assert_equal ({"key"=>"value"}), row.col_json
       assert_equal [{"key1"=>"value1"}, nil, {"key2"=>"value2"}], row.col_array_json
+    end
+
+    def test_get_uuid
+      uuid_value = SecureRandom.uuid
+      uuid_array_value = [SecureRandom.uuid, nil, SecureRandom.uuid]
+      sql = "SELECT `all_types`.* FROM `all_types` WHERE `all_types`.`col_int64` = @p1 LIMIT @p2"
+      col_id = Google::Cloud::Spanner::V1::StructType::Field.new name: "col_int64", type: Google::Cloud::Spanner::V1::Type.new(code: Google::Cloud::Spanner::V1::TypeCode::INT64)
+      col_uuid = Google::Cloud::Spanner::V1::StructType::Field.new name: "col_uuid", type: Google::Cloud::Spanner::V1::Type.new(code: Google::Cloud::Spanner::V1::TypeCode::UUID)
+      col_uuid_array = Google::Cloud::Spanner::V1::StructType::Field.new name: "col_array_uuid", type: Google::Cloud::Spanner::V1::Type.new(
+        code: Google::Cloud::Spanner::V1::TypeCode::ARRAY,
+        array_element_type: Google::Cloud::Spanner::V1::Type.new(code: Google::Cloud::Spanner::V1::TypeCode::UUID)
+      )
+      metadata = Google::Cloud::Spanner::V1::ResultSetMetadata.new row_type: Google::Cloud::Spanner::V1::StructType.new
+      metadata.row_type.fields.push(col_id, col_uuid, col_uuid_array)
+      result_set = Google::Cloud::Spanner::V1::ResultSet.new metadata: metadata
+      row = Google::Protobuf::ListValue.new
+      uuid_array = Google::Protobuf::ListValue.new
+      uuid_array.values.push(
+        Google::Protobuf::Value.new(string_value: uuid_array_value[0]),
+        Google::Protobuf::Value.new(null_value: "NULL_VALUE"),
+        Google::Protobuf::Value.new(string_value: uuid_array_value[2])
+      )
+      row.values.push(
+        Google::Protobuf::Value.new(string_value: "1"),
+        Google::Protobuf::Value.new(string_value: uuid_value),
+        Google::Protobuf::Value.new(list_value: uuid_array)
+      )
+      result_set.rows.push row
+      @mock.put_statement_result sql, StatementResult.new(result_set)
+
+      row = AllTypes.find_by col_int64: 1
+      assert_equal uuid_value, row.col_uuid
+      assert_equal uuid_array_value, row.col_array_uuid
     end
 
     def test_delete_associated_records
@@ -1067,6 +1406,19 @@ module MockServerTests
       assert_equal sql, execute_sql_request.sql
     end
 
+    def test_query_priority_hint
+      sql = "SELECT  `singers`.* FROM `singers`"
+      @mock.put_statement_result sql, MockServerTests::create_random_singers_result(4)
+      Singer.optimizer_hints("priority: PRIORITY_LOW").all.each do |singer|
+        refute_nil singer.id, "singer.id should not be nil"
+      end
+      select_requests = @mock.requests.select { |req| req.is_a?(Google::Cloud::Spanner::V1::ExecuteSqlRequest) && req.sql == sql }
+      select_requests.each do |request|
+        assert request.request_options
+        assert_equal :PRIORITY_LOW, request.request_options.priority
+      end
+    end
+
     def test_query_annotate_request_tag
       sql = "SELECT `singers`.* FROM `singers` /* request_tag: selecting all singers */"
       @mock.put_statement_result sql, MockServerTests::create_random_singers_result(4)
@@ -1076,6 +1428,20 @@ module MockServerTests
       select_requests = @mock.requests.select { |req| req.is_a?(Google::Cloud::Spanner::V1::ExecuteSqlRequest) && req.sql == sql }
       select_requests.each do |request|
         assert request.request_options
+        assert_equal "selecting all singers", request.request_options.request_tag
+      end
+    end
+
+    def test_query_priority_hint_and_request_tag
+      sql = "SELECT  `singers`.* FROM `singers` /* request_tag: selecting all singers */"
+      @mock.put_statement_result sql, MockServerTests::create_random_singers_result(4)
+      Singer.annotate("request_tag: selecting all singers").optimizer_hints("priority: PRIORITY_LOW").all.each do |singer|
+        refute_nil singer.id, "singer.id should not be nil"
+      end
+      select_requests = @mock.requests.select { |req| req.is_a?(Google::Cloud::Spanner::V1::ExecuteSqlRequest) && req.sql == sql }
+      select_requests.each do |request|
+        assert request.request_options
+        assert_equal :PRIORITY_LOW, request.request_options.priority
         assert_equal "selecting all singers", request.request_options.request_tag
       end
     end
@@ -1306,6 +1672,28 @@ module MockServerTests
       assert_equal 0, commit_requests[0].mutations.length
       execute_requests = @mock.requests.select { |req| req.is_a?(ExecuteSqlRequest) && req.sql == sql }
       assert_equal 1, execute_requests.length
+    end
+
+    def test_create_with_sequence_and_exclude_from_change_streams
+      sql = "INSERT INTO `table_with_sequence` (`name`) VALUES (@p1) THEN RETURN `id`"
+      @mock.put_statement_result sql, MockServerTests::create_id_returning_result_set(1, 1)
+      
+      record = TableWithSequence.transaction(exclude_txn_from_change_streams: true) do
+        TableWithSequence.create(name: "Foo")
+      end
+
+      assert_equal 1, record.id
+      execute_requests = @mock.requests.select do |req|
+        req.is_a?(Google::Cloud::Spanner::V1::ExecuteSqlRequest) && req.sql == sql
+      end
+
+      assert_equal 1, execute_requests.length
+      exec_req = execute_requests.first
+
+      refute_nil exec_req.transaction
+      begin_opts = exec_req.transaction&.begin
+      refute_nil begin_opts
+      assert_equal true, begin_opts.exclude_txn_from_change_streams
     end
 
     def test_binary_id

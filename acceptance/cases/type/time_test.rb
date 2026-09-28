@@ -71,9 +71,9 @@ module ActiveRecord
         assert_equal record, TestTypeModel.find_by(start_time: string_value)
       end
 
-      def test_default_year_is_correct
-        expected_time = ::Time.utc(2000, 1, 1, 10, 30, 0)
-        record = TestTypeModel.new start_time: { 4 => 10, 5 => 30 }
+      def test_multiparameter_assignment_preserves_date
+        expected_time = ::Time.utc(2026, 9, 9, 10, 30, 0)
+        record = TestTypeModel.new start_time: { 1 => 2026, 2 => 9, 3 => 9, 4 => 10, 5 => 30 }
 
         assert_equal expected_time, record.start_time
 
