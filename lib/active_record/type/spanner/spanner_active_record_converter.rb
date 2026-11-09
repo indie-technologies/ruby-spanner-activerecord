@@ -39,7 +39,6 @@ module ActiveRecord
           when ActiveRecord::Type::Json then :JSON
           when ActiveRecord::Type::Spanner::Uuid then :UUID
           when ActiveRecord::Type::Spanner::Array then [convert_active_model_type_to_spanner(type.element_type)]
-          # Enums carry no Spanner type of their own; without one, a nil value cannot be typed at all.
           when ActiveRecord::Enum::EnumType then convert_active_model_type_to_spanner(type.subtype)
           end
         end
