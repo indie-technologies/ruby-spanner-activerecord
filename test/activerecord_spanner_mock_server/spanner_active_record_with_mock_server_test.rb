@@ -748,6 +748,20 @@ module MockServerTests
       assert_equal "Alice", request.params["p1"]
     end
 
+    def test_update_enum_attribute_to_nil
+      update_sql = "UPDATE `singers` SET `last_name` = @p1 WHERE `singers`.`id` = @p2"
+      @mock.put_statement_result update_sql, StatementResult.new(1)
+
+      singer = SingerWithEnum.instantiate "id" => 1, "first_name" => "Alice", "last_name" => "Smith"
+      singer.update! last_name: nil
+
+      request = @mock.requests.find { |req| req.is_a?(Google::Cloud::Spanner::V1::ExecuteSqlRequest) && req.sql == update_sql }
+      refute_nil request
+      # Enum attributes must be typed by their underlying column type, as a nil value has no type of its own.
+      assert_equal :STRING, request.param_types["p1"].code
+      assert_nil request.params["p1"]
+    end
+
     def test_create_singer_with_picture
       insert_sql = "INSERT INTO `singers` (`first_name`, `last_name`, `picture`, `id`) VALUES (@p1, @p2, @p3, @p4)"
       @mock.put_statement_result insert_sql, StatementResult.new(1)

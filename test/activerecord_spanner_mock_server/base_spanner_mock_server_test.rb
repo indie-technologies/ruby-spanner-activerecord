@@ -16,6 +16,7 @@ require_relative "models/table_with_commit_timestamp"
 require_relative "models/table_with_identity"
 require_relative "models/table_with_sequence"
 require_relative "models/versioned_singer"
+require_relative "models/singer_with_enum"
 require_relative "models/user"
 require_relative "models/binary_project"
 
